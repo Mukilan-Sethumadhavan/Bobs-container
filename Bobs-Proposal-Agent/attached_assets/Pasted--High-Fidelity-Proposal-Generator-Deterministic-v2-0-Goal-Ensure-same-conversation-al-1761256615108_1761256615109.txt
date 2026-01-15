@@ -1,0 +1,148 @@
+/**
+ * 🚀 High-Fidelity Proposal Generator — Deterministic v2.0
+ * Goal: Ensure same conversation always yields same proposal (99% repeat fidelity)
+ * File Required: "Bob's Containers - All Products (SKUs) - For Agent.csv"
+ */
+
+import fs from "fs";
+import crypto from "crypto";
+import OpenAI from "openai";
+import Papa from "papaparse";
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+// === 1. LOAD PRODUCT CATALOG ===
+const csv = fs.readFileSync("./Bobs_Containers_All_Products.csv", "utf8");
+const { data: allProducts } = Papa.parse(csv, { header: true });
+const productMap = Object.fromEntries(
+  allProducts.map((p) => [p["Product ID"].trim(), p])
+);
+
+// === 2. INPUT NORMALIZATION & HASH LOCK ===
+function normalizeInput(text) {
+  return text
+    .replace(/[^\w\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function getHash(conversation, customer) {
+  return crypto
+    .createHash("sha256")
+    .update(normalizeInput(conversation))
+    .update(normalizeInput(customer))
+    .digest("hex");
+}
+
+// === 3. RULE-BASED TOKENIZER (non-AI prepass) ===
+function extractKeywords(conversation) {
+  const patterns = [
+    ["adu", /adu|backyard rental|guest house|tiny home/gi],
+    ["20ft", /20[-\s]?ft|20 foot/gi],
+    ["rooftop deck", /rooftop.*deck|deck.*rooftop/gi],
+    ["upgrade", /upgrade|premium|finish|interior/gi],
+  ];
+
+  const found = [];
+  for (const [label, regex] of patterns) {
+    if (regex.test(conversation)) found.push(label);
+  }
+  return found;
+}
+
+// === 4. LOCAL INDEX & SCORE-BASED MATCHING ===
+function scoreProduct(product, keywords) {
+  let score = 0;
+  const name = product["Name"].toLowerCase();
+
+  for (const kw of keywords) {
+    if (name.includes(kw)) score += 3;
+    if (kw === "adu" && name.includes("adu")) score += 5;
+    if (kw === "20ft" && name.includes("20")) score += 5;
+    if (kw === "rooftop deck" && name.includes("deck")) score += 4;
+  }
+  return score;
+}
+
+// === 5. AI NORMALIZER (low-temp text parser only) ===
+async function interpretConversation(conversation) {
+  const prompt = `
+You are a deterministic parser. Extract only explicit product intents.
+Return a JSON object with "requirements" (list of product phrases).
+Never infer emotional or vague language.
+Conversation: """${conversation}"""
+`;
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    temperature: 0,
+    response_format: { type: "json_object" },
+    messages: [{ role: "system", content: prompt }],
+  });
+
+  return JSON.parse(completion.choices[0].message.content);
+}
+
+// === 6. DETERMINISTIC PRODUCT SELECTION ===
+function chooseProduct(matches) {
+  if (matches.length === 0) return null;
+
+  // Price tiebreaker
+  matches.sort(
+    (a, b) => parseFloat(a.Price || 999999) - parseFloat(b.Price || 999999)
+  );
+
+  // Alphabetical tiebreaker
+  matches.sort((a, b) => a.Name.localeCompare(b.Name));
+
+  // Return first match (guaranteed consistent)
+  return matches[0];
+}
+
+// === 7. CACHED DECISION PIPELINE ===
+const cache = new Map();
+
+async function generateProposal(conversation, customer) {
+  const inputHash = getHash(conversation, customer);
+  if (cache.has(inputHash)) return cache.get(inputHash);
+
+  const { requirements } = await interpretConversation(conversation);
+  const keywords = extractKeywords(conversation).concat(requirements || []);
+
+  const scored = allProducts
+    .map((p) => ({ ...p, _score: scoreProduct(p, keywords) }))
+    .filter((p) => p._score > 0);
+
+  const topProduct = chooseProduct(scored);
+
+  const subtotal = parseFloat(topProduct?.Price || 0);
+  const total = (subtotal * 1.0825).toFixed(2);
+
+  const proposal = {
+    id: `BC-${new Date().toISOString().slice(0, 7).replace("-", "")}-${inputHash.slice(0, 6)}`,
+    customer,
+    conversation,
+    selectedProduct: topProduct?.Name,
+    price: subtotal,
+    totalWithTax: total,
+    timestamp: new Date().toISOString(),
+    deterministicHash: inputHash,
+    reasoning: {
+      keywords,
+      matchedProducts: scored.slice(0, 3).map((p) => p.Name),
+    },
+  };
+
+  cache.set(inputHash, proposal);
+  return proposal;
+}
+
+// === 8. RUN TEST EXAMPLE ===
+(async () => {
+  const result = await generateProposal(
+    "Looking for a small backyard rental with rooftop deck and upgraded interior.",
+    "John Doe"
+  );
+  console.log(JSON.stringify(result, null, 2));
+})();

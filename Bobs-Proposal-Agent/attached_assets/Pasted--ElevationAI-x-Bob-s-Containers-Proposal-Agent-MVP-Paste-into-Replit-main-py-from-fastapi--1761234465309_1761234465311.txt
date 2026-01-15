@@ -1,0 +1,128 @@
+"""
+ElevationAI x Bob’s Containers – Proposal Agent MVP
+Paste into Replit main.py
+"""
+
+from fastapi import FastAPI, Body
+import pandas as pd
+import httpx, os
+from openai import OpenAI
+
+app = FastAPI(title="Proposal Agent MVP")
+
+# ==== CONFIG ====
+HUBSPOT_TOKEN = os.getenv("HUBSPOT_PRIVATE_APP_TOKEN")
+OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+PRICING_CSV = "products.csv"   # upload your export file in Replit sidebar
+
+client = OpenAI(api_key=OPENAI_KEY)
+
+# ==== LOAD PRODUCTS ====
+products = None
+def load_products():
+    global products
+    products = pd.read_csv(PRICING_CSV)
+    print(f"Loaded {len(products)} products")
+
+load_products()
+
+# ==== SIMPLE PRICING ENGINE ====
+def price_config(family:str, options:dict, region:str=""):
+    df = products[products["family"].str.lower() == family.lower()]
+    if df.empty:
+        raise ValueError(f"No SKU found for {family}")
+    base = df.iloc[0]["base_price"]
+    lead_weeks = df.iloc[0].get("lead_weeks", 8)
+    # crude shipping heuristic for demo
+    shipping = 2000 if "TX" in region.upper() else 4000
+    options_total = sum(options.values()) if options else 0
+    subtotal = base + options_total + shipping
+    total = round(subtotal * 1.1, 2)   # add 10% high-anchor
+    return {
+        "family": family,
+        "base": base,
+        "options_total": options_total,
+        "shipping": shipping,
+        "lead_weeks": lead_weeks,
+        "total": total
+    }
+
+# ==== COMPOSE PROPOSAL ====
+def compose_scope(context):
+    prompt = f"""
+You are a sales engineer writing clear 1-paragraph proposals for containerized builds.
+
+Product family: {context['family']}
+Options: {context.get('options',{})}
+Region: {context.get('region')}
+Lead time: {context['lead_weeks']} weeks
+Total price: ${context['total']:,}
+
+Write a single paragraph (<=200 words) describing what’s included,
+avoid technical line-item lists, end with estimated lead time.
+"""
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role":"user","content":prompt}],
+        temperature=0.6,
+        max_tokens=250
+    )
+    return resp.choices[0].message.content.strip()
+
+# ==== HUBSPOT INTEGRATION ====
+def create_hubspot_quote(contact_id:str, deal_id:str, description:str, price:float):
+    headers = {
+        "Authorization": f"Bearer {HUBSPOT_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "properties": {
+            "hs_title": f"Auto-Quote {contact_id}",
+            "hs_status": "DRAFT",
+            "hs_quote_amount": price,
+            "hs_comment": description
+        },
+        "associations": [
+            {"to":{"id": deal_id},"types":[{"associationCategory":"HUBSPOT_DEFINED","associationTypeId":280}]} # Deal→Quote
+        ]
+    }
+    url = "https://api.hubapi.com/crm/v3/objects/quotes"
+    r = httpx.post(url, headers=headers, json=data)
+    return r.json()
+
+# ==== API ROUTES ====
+@app.get("/")
+def root():
+    return {"status":"ok","msg":"Proposal Agent running"}
+
+@app.post("/quote/preview")
+def quote_preview(
+    family:str = Body(...),
+    region:str = Body("Texas"),
+    options:dict = Body({})
+):
+    breakdown = price_config(family, options, region)
+    paragraph = compose_scope({**breakdown, "region":region, "options":options})
+    return {"breakdown":breakdown, "scope":paragraph}
+
+@app.post("/quote/create")
+def quote_create(
+    contact_id:str = Body(...),
+    deal_id:str = Body(...),
+    family:str = Body(...),
+    region:str = Body("Texas"),
+    options:dict = Body({})
+):
+    breakdown = price_config(family, options, region)
+    scope = compose_scope({**breakdown,"region":region,"options":options})
+    hs_resp = create_hubspot_quote(contact_id, deal_id, scope, breakdown["total"])
+    return {"hubspot_response":hs_resp, "scope":scope, "breakdown":breakdown}
+
+# ==== RELOAD PRODUCTS ====
+@app.get("/admin/reload")
+def reload_products():
+    load_products()
+    return {"reloaded":len(products)}
+
+# ==== RUN LOCALLY ====
+# In Replit it will auto-run with Uvicorn when you click "Run"
