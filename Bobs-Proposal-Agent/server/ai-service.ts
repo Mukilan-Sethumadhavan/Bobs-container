@@ -7,7 +7,7 @@ import { identifyBundles, suggestComplementaryProducts } from './product-bundler
 // Supports: OpenAI, Google Gemini (via OpenAI compatibility layer)
 const AI_PROVIDER = process.env.AI_PROVIDER || 'gemini'; // 'openai' or 'gemini'
 const AI_API_KEY = process.env.AI_API_KEY || process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY || 'AIzaSyBk4Jto0rkkTToDrQxICHruWD41S2158II'; // AIzaSyBv8FoWfT7DTVm9T9_GusoovxVOSFBLbu0
-const AI_MODEL = process.env.AI_MODEL || (AI_PROVIDER === 'gemini' ? 'gemini-2.5-flash' : 'gpt-4o-mini');
+const AI_MODEL = process.env.AI_MODEL || (AI_PROVIDER === 'gemini' ? 'gemini-1.5-flash' : 'gpt-4o-mini');
 const AI_BASE_URL = process.env.AI_BASE_URL || (AI_PROVIDER === 'gemini' 
   ? 'https://generativelanguage.googleapis.com/v1beta/openai/' 
   : undefined);
