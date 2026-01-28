@@ -38,7 +38,7 @@ If you can't edit the commands with Root Directory set, try this:
 Go to **Environment** section and add:
 
 ```
-AI_API_KEY = AIzaSyBk4Jto0rkkTToDrQxICHruWD41S2158II
+AI_API_KEY = your-gemini-api-key-here
 AI_PROVIDER = gemini
 AI_MODEL = gemini-2.5-flash
 NODE_ENV = production

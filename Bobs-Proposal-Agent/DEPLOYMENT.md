@@ -48,7 +48,7 @@ Render will auto-detect these settings from `render.yaml`:
 In the Render dashboard, go to **Environment** section and add:
 
 **Required:**
-- `AI_API_KEY` = `AIzaSyBk4Jto0rkkTToDrQxICHruWD41S2158II` (your Gemini API key)
+- `AI_API_KEY` = `your-gemini-api-key-here` (your Gemini API key)
 - `AI_PROVIDER` = `gemini`
 - `AI_MODEL` = `gemini-2.5-flash`
 - `NODE_ENV` = `production`

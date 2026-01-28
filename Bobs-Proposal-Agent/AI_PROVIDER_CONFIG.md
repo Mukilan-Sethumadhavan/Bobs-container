@@ -61,7 +61,7 @@ USE_LLM=false
 # No configuration needed - uses default Gemini Flash 2.5
 # Or explicitly set:
 export AI_PROVIDER=gemini
-export AI_API_KEY=AIzaSyBv8FoWfT7DTVm9T9_GusoovxVOSFBLbu0
+export AI_API_KEY=your-gemini-api-key-here
 ```
 
 ### Switching to OpenAI
@@ -79,7 +79,7 @@ Create `Bobs-Proposal-Agent/.env`:
 ```env
 # Gemini Configuration (Default)
 AI_PROVIDER=gemini
-AI_API_KEY=AIzaSyBv8FoWfT7DTVm9T9_GusoovxVOSFBLbu0
+AI_API_KEY=your-gemini-api-key-here
 AI_MODEL=gemini-2.5-flash
 
 # Or switch to OpenAI:
@@ -118,7 +118,7 @@ This means:
 1. **Test with Gemini:**
    ```bash
    export AI_PROVIDER=gemini
-   export AI_API_KEY=AIzaSyBv8FoWfT7DTVm9T9_GusoovxVOSFBLbu0
+   export AI_API_KEY=your-gemini-api-key-here
    npm run dev
    ```
 
