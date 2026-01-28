@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: bobs-proposal-agent
+    env: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: AI_PROVIDER
+        value: gemini
+      - key: AI_MODEL
+        value: gemini-2.5-flash
+      # Set these in Render Dashboard -> Environment Variables
+      # - key: AI_API_KEY
+      #   value: your-gemini-api-key
+      # - key: DATABASE_URL
+      #   value: your-postgres-connection-string

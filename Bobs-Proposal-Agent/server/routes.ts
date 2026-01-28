@@ -64,76 +64,214 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Generate complete proposal from conversation (2-step flow)
-  app.post("/api/proposals/generate", async (req, res) => {
-    try {
-      const data = analyzeConversationSchema.parse(req.body);
+  // // Generate complete proposal from conversation (2-step flow)
+  // app.post("/api/proposals/generate", async (req, res) => {
+  //   try {
+  //     const data = analyzeConversationSchema.parse(req.body);
       
-      // Get all products for intelligent matching
-      const products = await storage.getProducts();
+  //     // print the data on console
+  //     console.log("Received data:", data);
       
-      // Analyze conversation with AI
-      const analysis = await analyzeConversation(
-        data.conversationNotes,
-        data.customerName,
-        products
-      );
-
-      // If no products matched, return error
-      if (!analysis.matchedProducts || analysis.matchedProducts.length === 0) {
-        return res.status(400).json({ 
-          error: "Could not identify specific products from conversation",
-          analysis 
-        });
-      }
-
-      // Calculate pricing
-      const lineItems = analysis.matchedProducts.map(match => ({
-        productId: match.productId,
-        productName: match.productName,
-        quantity: match.quantity,
-        unitPrice: match.unitPrice || 0,
-        total: (match.unitPrice || 0) * match.quantity, // Changed from totalPrice to total
-      }));
-
-      const subtotal = lineItems.reduce((sum, item) => sum + item.total, 0);
-      const taxRate = 0.0825; // 8.25% tax
-      const tax = Math.round(subtotal * taxRate);
-      const total = subtotal + tax;
-
-      // Generate proposal number
-      const date = new Date();
-      const proposalNumber = `BC-${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}-${Math.floor(Math.random() * 9000) + 1000}`;
-
-      // Create the proposal
-      const proposal: InsertProposal = {
-        proposalNumber,
-        customerName: data.customerName,
-        customerEmail: data.customerEmail || '',
-        conversationNotes: data.conversationNotes,
-        aiAnalysis: analysis,
-        lineItems,
-        subtotal,
-        tax,
-        total,
-        status: "pending",
-      };
-
-      const created = await storage.createProposal(proposal);
+  //     // Get all products for intelligent matching
+  //     const products = await storage.getProducts();
       
-      // Return the created proposal with analysis
-      res.json({
-        proposal: created,
-        analysis
-      });
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ error: "Validation error", details: error.errors });
-      }
-      console.error("Error generating proposal:", error);
-      res.status(500).json({ error: "Failed to generate proposal" });
+  //     // Analyze conversation with AI
+  //     const analysis = await analyzeConversation(
+  //       data.conversationNotes,
+  //       data.customerName,
+  //       products
+  //     );
+
+  //     // If no products matched, return error
+  //     if (!analysis.matchedProducts || analysis.matchedProducts.length === 0) {
+  //       return res.status(400).json({ 
+  //         error: "Could not identify specific products from conversation",
+  //         analysis 
+  //       });
+  //     }
+
+  //     // Calculate pricing
+  //     const lineItems = analysis.matchedProducts.map(match => ({
+  //       productId: match.productId,
+  //       productName: match.productName,
+  //       quantity: match.quantity,
+  //       unitPrice: match.unitPrice || 0,
+  //       total: (match.unitPrice || 0) * match.quantity, // Changed from totalPrice to total
+  //     }));
+
+  //     const subtotal = lineItems.reduce((sum, item) => sum + item.total, 0);
+  //     const taxRate = 0.0825; // 8.25% tax
+  //     const tax = Math.round(subtotal * taxRate);
+  //     const total = subtotal + tax;
+
+  //     // Generate proposal number
+  //     const date = new Date();
+  //     const proposalNumber = `BC-${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}-${Math.floor(Math.random() * 9000) + 1000}`;
+
+  //     // Use customer name from AI analysis if available, otherwise use provided name
+  //     const finalCustomerName = (analysis as any).customerName || data.customerName;
+
+  //     // Create the proposal
+  //     const proposal: InsertProposal = {
+  //       proposalNumber,
+  //       customerName: finalCustomerName,
+  //       customerEmail: data.customerEmail || '',
+  //       conversationNotes: data.conversationNotes,
+  //       aiAnalysis: analysis,
+  //       lineItems,
+  //       subtotal,
+  //       tax,
+  //       total,
+  //       status: "pending",
+  //     };
+
+  //     const created = await storage.createProposal(proposal);
+      
+  //     // Return the created proposal with analysis
+  //     res.json({
+  //       proposal: created,
+  //       analysis
+  //     });
+  //   } catch (error) {
+  //     if (error instanceof z.ZodError) {
+  //       return res.status(400).json({ error: "Validation error", details: error.errors });
+  //     }
+  //     console.error("Error generating proposal:", error);
+  //     res.status(500).json({ error: "Failed to generate proposal" });
+  //   }
+  // });
+
+  // New endpoint: Generate proposal from conversation with sequence number
+app.post("/api/proposals/generate", async (req, res) => {
+  try {
+    const { sequence_number, conversationNotes } = req.body;
+    
+    // Validate input
+    if (!sequence_number || typeof sequence_number !== 'number') {
+      return res.status(400).json({ error: "sequence_number is required and must be a number" });
     }
-  });
+    
+    if (!conversationNotes || typeof conversationNotes !== 'string' || conversationNotes.length < 20) {
+      return res.status(400).json({ error: "conversationNotes is required and must be at least 20 characters" });
+    }
+    
+    console.log("Received data:", { sequence_number, conversationNotes });
+    
+    // Extract customer info intelligently from conversation
+    const extractCustomerName = (text: string): string => {
+      const patterns = [
+        /(?:my\s+name\s+(?:is|would\s+be|will\s+be)|change\s+my\s+name\s+to|name\s+would\s+be)\s+([A-Za-z][A-Za-z0-9\s]+?)(?:[,\.\n]|$)/i,
+        /(?:I'?m|I\s+am)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/i,
+        /(?:customer|client|contact):\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/i,
+        /(?:^|\n)(?:name|Name):\s*([A-Za-z][A-Za-z0-9\s]+?)(?:[,\.\n]|$)/i,
+        /this\s+is\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/i,
+        /^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?):/m,
+      ];
+      
+      for (const pattern of patterns) {
+        const match = text.match(pattern);
+        if (match?.[1]) {
+          const name = match[1].trim();
+          if (name.length > 1 && 
+              !name.toLowerCase().includes('customer') && 
+              !name.toLowerCase().includes('client') &&
+              !name.toLowerCase().includes('sales') &&
+              name.length < 50) {
+            return name;
+          }
+        }
+      }
+      
+      return "Valued Customer";
+    };
+    
+    const extractCustomerEmail = (text: string): string | undefined => {
+      const emailPattern = /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/;
+      const match = text.match(emailPattern);
+      return match?.[1];
+    };
+    
+    const customerName = extractCustomerName(conversationNotes);
+    const customerEmail = extractCustomerEmail(conversationNotes);
+    
+    // Get all products for intelligent matching
+    const products = await storage.getProducts();
+    
+    // Analyze conversation with AI
+    const analysis = await analyzeConversation(
+      conversationNotes,
+      customerName,
+      products
+    );
+
+    // If no products matched, return error
+    if (!analysis.matchedProducts || analysis.matchedProducts.length === 0) {
+      return res.status(400).json({ 
+        error: "Could not identify specific products from conversation",
+        analysis 
+      });
+    }
+
+    // Calculate pricing
+    const lineItems = analysis.matchedProducts.map(match => ({
+      productId: match.productId,
+      productName: match.productName,
+      quantity: match.quantity,
+      unitPrice: match.unitPrice || 0,
+      total: (match.unitPrice || 0) * match.quantity,
+    }));
+
+    const subtotal = lineItems.reduce((sum, item) => sum + item.total, 0);
+    const taxRate = 0.0825; // 8.25% tax
+    const tax = Math.round(subtotal * taxRate);
+    const total = subtotal + tax;
+
+    // Use sequence number for proposal number
+    const proposalNumber = `BC-SEQ-${String(sequence_number).padStart(6, '0')}`;
+
+    // Use customer name from AI analysis if available, otherwise use extracted name
+    const finalCustomerName = (analysis as any).customerName || customerName;
+
+    // Create the proposal
+    const proposal: InsertProposal = {
+      proposalNumber,
+      customerName: finalCustomerName,
+      customerEmail: customerEmail || '',
+      conversationNotes,
+      aiAnalysis: analysis,
+      lineItems,
+      subtotal,
+      tax,
+      total,
+      status: "pending",
+    };
+
+    const created = await storage.createProposal(proposal);
+    
+    // Return the created proposal with analysis
+    res.json({
+      success: true,
+      proposal: created,
+      analysis,
+      metadata: {
+        sequence_number,
+        matched_products: analysis.matchedProducts.length,
+        confidence_score: Math.round(
+          (analysis.matchedProducts.reduce((sum: number, p: any) => sum + (p.confidence || 0.5), 0) / 
+          Math.max(analysis.matchedProducts.length, 1)) * 100
+        ),
+        unmatched_needs: (analysis as any).unmatchedNeeds || []
+      }
+    });
+  } catch (error) {
+    console.error("Error generating proposal from sequence:", error);
+    res.status(500).json({ 
+      success: false,
+      error: "Failed to generate proposal",
+      details: error instanceof Error ? error.message : String(error)
+    });
+  }
+});
 
   // Create proposal
   app.post("/api/proposals", async (req, res) => {

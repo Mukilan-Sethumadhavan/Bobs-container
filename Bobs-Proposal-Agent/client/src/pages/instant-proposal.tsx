@@ -23,17 +23,39 @@ function formatCurrency(cents: number): string {
 
 function extractCustomerName(text: string): string {
   // Try to extract customer name from conversation patterns
+  // Look for various patterns where customer mentions their name
   const patterns = [
-    /(?:customer|client|contact):\s*([A-Z][a-z]+ [A-Z][a-z]+)/i,
-    /(?:name|contact):\s*([A-Z][a-z]+ [A-Z][a-z]+)/i,
-    /^([A-Z][a-z]+ [A-Z][a-z]+):/m,
+    // "my name is X" or "my name would be X" or "change my name to X"
+    /(?:my\s+name\s+(?:is|would\s+be|will\s+be)|change\s+my\s+name\s+to|name\s+would\s+be)\s+([A-Za-z][A-Za-z0-9\s]+?)(?:[,\\.\\n]|$)/i,
+    // "I'm X" or "I am X"
+    /(?:I'?m|I\s+am)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/i,
+    // "Customer: X" or "Client: X"
+    /(?:customer|client|contact):\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/i,
+    // "name: X" or "Name: X"
+    /(?:^|\n)(?:name|Name):\s*([A-Za-z][A-Za-z0-9\s]+?)(?:[,\\.\\n]|$)/i,
+    // "This is X" (when customer introduces themselves)
+    /this\s+is\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/i,
+    // Standard "First Last:" format at start of line
+    /^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?):/m,
   ];
   
   for (const pattern of patterns) {
     const match = text.match(pattern);
-    if (match?.[1]) return match[1];
+    if (match?.[1]) {
+      const name = match[1].trim();
+      // Filter out common false positives
+      if (name.length > 1 && 
+          !name.toLowerCase().includes('customer') && 
+          !name.toLowerCase().includes('client') &&
+          !name.toLowerCase().includes('sales') &&
+          name.length < 50) {
+        return name;
+      }
+    }
   }
   
+  // If no pattern matched, try to use Gemini to extract the name
+  // For now, return default but we could enhance this later
   return "Valued Customer";
 }
 
@@ -68,6 +90,12 @@ export default function InstantProposal() {
     },
     onSuccess: (data) => {
       if (data.proposal) {
+        // Use customer name from AI analysis if available and not default
+        if (data.analysis?.customerName && 
+            data.analysis.customerName !== "Valued Customer" && 
+            data.analysis.customerName.trim().length > 0) {
+          data.proposal.customerName = data.analysis.customerName;
+        }
         setGeneratedProposal(data.proposal);
         
         // Calculate confidence score based on matched products

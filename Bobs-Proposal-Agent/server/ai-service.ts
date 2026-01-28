@@ -3,9 +3,18 @@ import { z } from 'zod';
 import crypto from 'crypto';
 import { identifyBundles, suggestComplementaryProducts } from './product-bundler';
 
-const openai = new OpenAI({
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY || process.env.OPENAI_API_KEY,
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL || process.env.OPENAI_BASE_URL,
+// AI Provider Configuration - Easily replaceable
+// Supports: OpenAI, Google Gemini (via OpenAI compatibility layer)
+const AI_PROVIDER = process.env.AI_PROVIDER || 'gemini'; // 'openai' or 'gemini'
+const AI_API_KEY = process.env.AI_API_KEY || process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY || 'AIzaSyBk4Jto0rkkTToDrQxICHruWD41S2158II'; // AIzaSyBv8FoWfT7DTVm9T9_GusoovxVOSFBLbu0
+const AI_MODEL = process.env.AI_MODEL || (AI_PROVIDER === 'gemini' ? 'gemini-2.5-flash' : 'gpt-4o-mini');
+const AI_BASE_URL = process.env.AI_BASE_URL || (AI_PROVIDER === 'gemini' 
+  ? 'https://generativelanguage.googleapis.com/v1beta/openai/' 
+  : undefined);
+
+const aiClient = new OpenAI({
+  apiKey: AI_API_KEY,
+  baseURL: AI_BASE_URL,
 });
 
 // Cache for deterministic results - stores hash of input -> result
@@ -43,6 +52,16 @@ const KEYWORD_PATTERNS: KeywordPattern[] = [
     label: '20ft',
     patterns: [/20[\s-]?ft/gi, /20[\s-]?foot/gi, /twenty[\s-]?foot/gi, /20'/gi],
     weight: 10  // High weight for specific container sizes
+  },
+  {
+    label: 'high_cube',
+    patterns: [/high\s+cube/gi, /high\s+cube\s+container/gi, /new\s+high\s+cube/gi],
+    weight: 15  // Very high weight for high cube containers (more specific)
+  },
+  {
+    label: 'new',
+    patterns: [/\bnew\s+container/gi, /\bnew\s+20/gi, /\bnew\s+high/gi],
+    weight: 8  // Good weight for "new" containers
   },
   {
     label: '40ft',
@@ -205,6 +224,16 @@ function scoreProduct(
         break;
       case '20ft':
         if (productNameLower.includes('20')) {
+          score += pattern.weight * 2;
+        }
+        break;
+      case 'high_cube':
+        if (productNameLower.includes('high') && productNameLower.includes('cube')) {
+          score += pattern.weight * 3; // Extra weight for high cube
+        }
+        break;
+      case 'new':
+        if (productNameLower.includes('new')) {
           score += pattern.weight * 2;
         }
         break;
@@ -381,6 +410,7 @@ export interface AIAnalysisResult {
   matchedProducts: ProductMatch[];
   estimatedBudget?: string;
   timeline?: string;
+  customerName?: string;
   additionalNotes?: string;
   reasoningSteps?: string[];
   unmatchedNeeds?: string[];
@@ -474,58 +504,47 @@ export async function analyzeConversation(
       return aiResultCache.get(inputHash)!;
     }
 
-    // PHASE 1: Rule-based keyword extraction (100% deterministic)
-    const keywords = extractKeywords(conversationNotes);
-    console.log('📝 Extracted keywords:', Array.from(keywords));
-    
-    // PHASE 2: Score all products based on keywords
-    const scoredProducts: ScoredProduct[] = products.map(p => ({
-      ...p,
-      score: scoreProduct(p, keywords)
-    }));
-    
-    // PHASE 3: Select best products using deterministic tiebreakers
-    const selectedProducts = selectBestProducts(scoredProducts, keywords);
-    console.log(`🏆 Top scoring products: ${selectedProducts.slice(0, 5).map(p => `${p.name} (score: ${p.score})`).join(', ')}`);
-    
-    // PHASE 4: Simplified AI parsing for quantities and context
-    const { index: productIndex, synonymMap } = createProductIndex(products);
-    
-    // Format products in a structured way
+    // Format products in a structured way for Gemini
     const productCatalog = products.map(p => 
       `ID: ${p.id}\nName: ${p.name}\nPrice: $${(p.unitPrice / 100).toFixed(2)}`
     ).join('\n---\n');
 
-    // Build matched products from scoring system
-    const preSelectedProducts = selectedProducts.slice(0, 10).map(p => ({
-      productId: p.id,
-      productName: p.name,
-      quantity: 1, // Default, will be adjusted by AI
-      unitPrice: p.unitPrice,
-      score: p.score
-    }));
+    // Direct prompt to Gemini - no keyword matching, let AI do all the work
+    const systemPrompt = `You are an expert sales proposal generator for Bob's Containers. Your job is to analyze customer conversations and create accurate proposals by matching customer requests to products in the catalog.
 
-    const systemPrompt = `You are a deterministic quantity parser for Bob's Containers.
+CRITICAL RULES:
+1. DISTINGUISH CUSTOMER REQUESTS FROM SALES OPTIONS:
+   - When Sales lists products (e.g., "We have: Office, Kitchen, Bathroom..."), these are OPTIONS, NOT requests
+   - Only include products the CUSTOMER explicitly requested or said they want
+   - Look for customer phrases: "I want", "I need", "I would like", "I'll take", "I'll go with", "I would love"
+   - If customer says "I would love X" or "I need X", that's the actual request
+   - Ignore products that only appear in Sales' lists of available options
 
-ALREADY SELECTED PRODUCTS (by scoring system):
-${preSelectedProducts.map(p => `- ${p.productName} (ID: ${p.productId}, Score: ${p.score})`).join('\n')}
+2. PRODUCT MATCHING:
+   - Match the EXACT product the customer requested from the catalog
+   - Use the product name from the catalog exactly (including exact spelling and format)
+   - Match product IDs exactly as they appear in the catalog
+   - If customer says "new high cube container", find the product with "New High Cube Container" in the name
 
-YOUR TASKS:
-1. Determine QUANTITIES for the pre-selected products
-2. Identify which selected products to actually include based on conversation
-3. Extract any timeline or budget mentioned
+3. QUANTITY EXTRACTION:
+   - "two" or "2" → quantity: 2
+   - "a couple" → quantity: 2
+   - "a few" → quantity: 3
+   - "several" → quantity: 4
+   - "I need 2 containers" → quantity: 2
+   - No mention → quantity: 1
 
-QUANTITY RULES:
-- "two" or "2" → quantity: 2
-- "a couple" → quantity: 2
-- "a few" → quantity: 3
-- "several" → quantity: 4
-- No mention → quantity: 1
+4. CONTEXT UNDERSTANDING:
+   - "discussing X vs Y" → This is comparison, NOT a purchase request
+   - Only include products that are explicitly requested or clearly needed
+   - If customer just "discussed" or "compared" something, don't include it
+   - Sales listing options ≠ Customer requesting them
 
-CONTEXT RULES:
-- "discussing X vs Y" → This is comparison, NOT a purchase request
-- Only include products that are explicitly requested or clearly needed
-- If customer just "discussed" or "compared" something, don't include it
+5. EXTRACT ADDITIONAL INFO:
+   - Timeline: Extract delivery dates/timelines mentioned
+   - Budget: Extract budget information if mentioned
+   - Location: Note delivery location if mentioned
+   - Customer Name: Extract the customer's actual name from the conversation (look for "my name is", "my name would be", "change my name to", etc.)
 
 You will respond with ONLY valid JSON matching the exact schema provided.`;
 
@@ -536,15 +555,19 @@ CUSTOMER: ${customerName}
 CONVERSATION NOTES:
 ${conversationNotes}
 
-TASK: Analyze this conversation and match to exact products with perfect accuracy.
+TASK: Analyze this conversation and create a proposal by matching customer requests to products in the catalog.
 
-IMPORTANT: When the conversation mentions "discussing 20-ft versus multi-container homes", this is a COMPARISON, not a request for both products. Only select what the customer actually DECIDED on or REQUESTED, not what they discussed as options.
+INSTRUCTIONS:
+1. Read the conversation carefully and identify what the CUSTOMER actually requested (not what Sales listed as options)
+2. Match customer requests to products in the catalog using EXACT product names and IDs
+3. Extract quantities, timeline, budget, and other relevant information
+4. Only include products the customer explicitly requested
 
-Step 1: Extract ONLY the ACTUAL requirements (not comparison points)
-Step 2: For EACH requirement, use the EXACT PRODUCT SELECTION RULES above
-Step 3: Always use quantity 1 unless a number is explicitly stated
-Step 4: Validate all product IDs exist in the catalog
-Step 5: For the EXACT phrase "small backyard rental unit", ALWAYS choose the FIRST product alphabetically that contains "ADU" or "Studio" in the name
+EXAMPLE:
+- Sales: "We have: 20ft Office, 20ft Kitchen, 20ft Bathroom, 20ft New High Cube Container..."
+- Customer: "I would love a new high cube container. I need 2 containers."
+- CORRECT: Match "20ft New High Cube Container" with quantity: 2
+- WRONG: Don't match Office, Kitchen, Bathroom (these were just options listed)
 
 Return a JSON response with this EXACT structure:
 {
@@ -564,61 +587,74 @@ Return a JSON response with this EXACT structure:
   "unmatchedNeeds": [any requirements you couldn't match],
   "estimatedBudget": "budget if mentioned or null",
   "timeline": "timeline if mentioned or null",
+  "customerName": "extracted customer name from conversation or null",
   "additionalNotes": "special requests or null"
 }`;
 
-    // Build the final matched products from scoring system
-    const matchedProducts: ProductMatch[] = [];
+    // Check if LLM should be used (default: true if API key is available)
+    const useLLM = process.env.USE_LLM !== 'false' && AI_API_KEY;
     
-    // Use scoring system results directly
-    if (selectedProducts.length > 0) {
-      // Extract requirements from conversation
-      const requirements: string[] = [];
-      if (keywords.has('container')) requirements.push('shipping container');
-      if (keywords.has('adu')) requirements.push('small backyard rental unit');
-      if (keywords.has('20ft')) requirements.push('20-ft container');
-      if (keywords.has('40ft')) requirements.push('40-ft container');
-      if (keywords.has('53ft')) requirements.push('53-ft container');
-      if (keywords.has('office')) requirements.push('office container');
-      if (keywords.has('kitchen')) requirements.push('kitchen container');
-      if (keywords.has('bathroom')) requirements.push('bathroom facilities');
-      if (keywords.has('studio')) requirements.push('studio unit');
-      if (keywords.has('offgrid')) requirements.push('off-grid setup');
-      if (keywords.has('solar')) requirements.push('solar pre-wiring/panels');
-      if (keywords.has('composting')) requirements.push('composting toilet');
-      if (keywords.has('insulation')) requirements.push('upgraded insulation');
-      if (keywords.has('electrical')) requirements.push('electrical system');
-      if (keywords.has('water')) requirements.push('water storage/plumbing');
-      if (keywords.has('battery')) requirements.push('battery storage system');
-      if (keywords.has('foundation')) requirements.push('foundation/concrete pad');
-      if (keywords.has('rooftop_deck')) requirements.push('rooftop deck');
-      if (keywords.has('upgrade')) requirements.push('upgraded finishes');
-      if (keywords.has('onsite')) requirements.push('site assessment');
-      if (keywords.has('consultation')) requirements.push('design call');
-      if (keywords.has('permit')) requirements.push('permitting assistance');
-      if (keywords.has('timeline')) requirements.push('expedited delivery');
-      if (keywords.has('gate')) requirements.push('modular/narrow access build');
-      
-      // Map scored products to matched products
-      // Limit to top 5 highest scoring products to avoid including too many items
-      const topProducts = selectedProducts
-        .filter(p => p.score >= 6)  // Increased minimum score threshold to be more selective
-        .slice(0, 5);  // Take only the top 5 products
-      
-      for (const product of topProducts) {
-        matchedProducts.push({
-          productId: product.id,
-          productName: product.name,
-          quantity: 1,  // Default quantity
-          unitPrice: product.unitPrice,
-          confidence: Math.min(1.0, product.score / 10),  // Convert score to confidence
-          evidence: `Matched based on keywords: ${Array.from(keywords).join(', ')}`,
-          reasoning: `Product scored ${product.score} points based on keyword matching`
+    let matchedProducts: ProductMatch[] = [];
+    let aiAnalysisResult: any = null;
+
+    // Always use Gemini directly - no keyword matching, let AI do all the work
+    if (useLLM) {
+      try {
+        console.log(`🤖 Calling ${AI_PROVIDER.toUpperCase()} (${AI_MODEL}) to refine product selection...`);
+        
+        const response = await aiClient.chat.completions.create({
+          model: AI_MODEL,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ],
+          response_format: { type: 'json_object' },
+          temperature: 0.1, // Low temperature for consistency
+          max_tokens: 2000
         });
+
+        const aiResponseText = response.choices[0]?.message?.content;
+        if (aiResponseText) {
+          aiAnalysisResult = JSON.parse(aiResponseText);
+          console.log(`✅ ${AI_PROVIDER.toUpperCase()} response received:`, JSON.stringify(aiAnalysisResult, null, 2));
+
+          // Validate and map LLM response to our format
+          if (aiAnalysisResult.matchedProducts && Array.isArray(aiAnalysisResult.matchedProducts)) {
+            matchedProducts = aiAnalysisResult.matchedProducts
+              .filter((p: any) => {
+                // Validate product ID exists
+                const productExists = products.some(prod => prod.id === p.productId);
+                if (!productExists) {
+                  console.warn(`⚠️ LLM suggested invalid product ID: ${p.productId}`);
+                  return false;
+                }
+                return true;
+              })
+              .map((p: any) => {
+                // Find the actual product to get correct price
+                const actualProduct = products.find(prod => prod.id === p.productId);
+                return {
+                  productId: p.productId,
+                  productName: p.productName || actualProduct?.name || 'Unknown',
+                  quantity: Math.max(1, Math.floor(p.quantity || 1)),
+                  unitPrice: p.unitPrice || actualProduct?.unitPrice || 0,
+                  confidence: Math.min(1.0, Math.max(0.0, p.confidence || 0.5)),
+                  evidence: p.evidence || 'Matched by LLM analysis',
+                  reasoning: p.reasoning || 'LLM determined this product matches the requirement'
+                } as ProductMatch;
+              });
+          }
+        }
+      } catch (llmError) {
+        console.error('❌ LLM call failed, falling back to scoring system:', llmError);
+        // Fall through to scoring system
       }
-      
-      // Identify potential bundles
-      const bundles = identifyBundles(keywords, products);
+    }
+
+    // If LLM returned results, use them
+    if (matchedProducts.length > 0) {
+      // Identify potential bundles (using empty keywords set since we're not using keyword matching)
+      const bundles = identifyBundles(new Set(), products);
       
       // Suggest complementary products
       const selectedIds = matchedProducts.map(m => m.productId);
@@ -626,15 +662,15 @@ Return a JSON response with this EXACT structure:
       
       // Cache and return result
       const result: AIAnalysisResult = {
-        requirements,
+        requirements: aiAnalysisResult?.requirements || [],
         recommendedProducts: [],
         matchedProducts,
-        estimatedBudget: undefined,
-        timeline: undefined,
-        additionalNotes: `Selected using deterministic scoring system`,
-        reasoningSteps: [`Extracted keywords: ${Array.from(keywords).join(', ')}`, 
-                        `Top products by score: ${selectedProducts.slice(0, 3).map(p => `${p.name} (${p.score})`).join(', ')}`],
-        unmatchedNeeds: undefined,
+        estimatedBudget: aiAnalysisResult?.estimatedBudget || undefined,
+        timeline: aiAnalysisResult?.timeline || undefined,
+        customerName: aiAnalysisResult?.customerName || undefined, // Use name extracted by AI
+        additionalNotes: aiAnalysisResult?.additionalNotes || `Selected using ${AI_PROVIDER.toUpperCase()}-enhanced analysis`,
+        reasoningSteps: aiAnalysisResult?.reasoningSteps || [],
+        unmatchedNeeds: aiAnalysisResult?.unmatchedNeeds || undefined,
         bundles: bundles.length > 0 ? bundles.map(b => ({
           name: b.name,
           description: b.description,
@@ -657,7 +693,7 @@ Return a JSON response with this EXACT structure:
     }
     
     // Fallback if no products matched - return empty result
-    console.log('⚠️ No products matched via scoring, returning empty proposal');
+    console.log('⚠️ No products matched by AI, returning empty proposal');
     
     const fallbackResult: AIAnalysisResult = {
       requirements: ['No clear product requirements identified'],
@@ -665,9 +701,9 @@ Return a JSON response with this EXACT structure:
       matchedProducts: [],
       estimatedBudget: undefined,
       timeline: undefined,
-      additionalNotes: 'Unable to identify specific products from the conversation',
-      reasoningSteps: ['No keywords matched our product patterns'],
-      unmatchedNeeds: ['Please provide more specific product requirements']
+      additionalNotes: 'Unable to identify specific products from the conversation. Please ensure Gemini API is configured and working.',
+      reasoningSteps: ['AI analysis did not match any products'],
+      unmatchedNeeds: ['Please provide more specific product requirements or check AI configuration']
     };
     
     // Cache the fallback result
