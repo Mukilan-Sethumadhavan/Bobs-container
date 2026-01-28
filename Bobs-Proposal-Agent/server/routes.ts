@@ -16,6 +16,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Load products from CSV on startup
   await loadProductsFromCSV();
 
+  // Health check endpoint to verify AI configuration
+  app.get("/api/health", async (req, res) => {
+    const aiProvider = process.env.AI_PROVIDER || 'gemini';
+    const aiModel = process.env.AI_MODEL || 'gemini-2.5-flash';
+    const hasApiKey = !!(process.env.AI_API_KEY || process.env.GEMINI_API_KEY);
+    const apiKeyPrefix = process.env.AI_API_KEY ? process.env.AI_API_KEY.substring(0, 10) + '...' : 'NOT SET';
+    
+    res.json({
+      status: 'ok',
+      ai: {
+        provider: aiProvider,
+        model: aiModel,
+        apiKeyConfigured: hasApiKey,
+        apiKeyPrefix: apiKeyPrefix,
+      },
+      environment: process.env.NODE_ENV || 'development',
+    });
+  });
+
   // Get all products
   app.get("/api/products", async (req, res) => {
     try {
