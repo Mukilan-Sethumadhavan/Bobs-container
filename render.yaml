@@ -4,7 +4,7 @@ services:
     env: node
     plan: free
     rootDir: Bobs-Proposal-Agent
-    buildCommand: bash build.sh
+    buildCommand: cd Bobs-Proposal-Agent && npm install --include=dev && npm run build
     startCommand: cd Bobs-Proposal-Agent && npm start
     envVars:
       - key: NODE_ENV
