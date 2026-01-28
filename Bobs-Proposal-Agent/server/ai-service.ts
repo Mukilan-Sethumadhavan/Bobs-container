@@ -3,14 +3,15 @@ import { z } from 'zod';
 import crypto from 'crypto';
 import { identifyBundles, suggestComplementaryProducts } from './product-bundler';
 
-// AI Provider Configuration - Easily replaceable
-// Supports: OpenAI, Google Gemini (via OpenAI compatibility layer)
-const AI_PROVIDER = process.env.AI_PROVIDER || 'gemini'; // 'openai' or 'gemini'
-const AI_API_KEY = process.env.AI_API_KEY || process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY || 'AIzaSyBk4Jto0rkkTToDrQxICHruWD41S2158II'; // AIzaSyBv8FoWfT7DTVm9T9_GusoovxVOSFBLbu0
-const AI_MODEL = process.env.AI_MODEL || (AI_PROVIDER === 'gemini' ? 'gemini-1.5-flash' : 'gpt-4o-mini');
-const AI_BASE_URL = process.env.AI_BASE_URL || (AI_PROVIDER === 'gemini' 
-  ? 'https://generativelanguage.googleapis.com/v1beta/openai/' 
-  : undefined);
+// AI Provider Configuration - GEMINI ONLY
+// Uses Google Gemini via OpenAI compatibility layer
+const AI_PROVIDER = 'gemini';
+const AI_API_KEY = process.env.AI_API_KEY || process.env.GEMINI_API_KEY || '';
+const AI_MODEL = process.env.AI_MODEL || 'gemini-2.0-flash-exp';
+const AI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/';
+
+// Log configuration on startup
+console.log(`🔧 AI Config: Provider=${AI_PROVIDER}, Model=${AI_MODEL}, API Key=${AI_API_KEY ? AI_API_KEY.substring(0, 10) + '...' : 'NOT SET'}`);
 
 const aiClient = new OpenAI({
   apiKey: AI_API_KEY,
